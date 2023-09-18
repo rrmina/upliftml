@@ -683,3 +683,128 @@ class RetrospectiveEstimator:
         df = df.select([*df_cols, self.output_colname])
 
         return df
+
+
+########################################################################################
+##
+##     Changes to the Estimators class to allow customization of the base models
+##
+########################################################################################
+
+class ModifiedTLearnerEstimator(TLearnerEstimator):
+    def __init__(
+        self,
+        base_model_class_1: Any,
+        base_model_params_1: Dict,
+        base_model_class_2: Any,
+        base_model_params_2: Dict,
+        predictors_colname: str = "features",
+        treatment_colname: str = "treatment",
+        target_colname: str = "outcome",
+        treatment_value: int = 1,
+        control_value: int = 0,
+        output_colname: str = "score",
+    ):
+
+        """Initializes the T-learner.
+
+        Args:
+            base_model_class_1 (pyspark.ml): the model class to instantiate the T-learner with
+            base_model_params_1 (dict): parameters and their values for the models
+            base_model_class_2 (pyspark.ml): the model class to instantiate the T-learner with
+            base_model_params_2 (dict): parameters and their values for the models
+            predictors_colname (str, optional): the column names that contain the predictor variables
+            treatment_colname (str, optional): the column name that contains the treatment indicators
+            target_colname (str, optional): the column name that contains the target
+            treatment_value (str or int, optional): the value in column <treatment_colname> that refers to the treatment group
+            control_value (str or int, optional): the value in column <treatment_colname> that refers to the control group
+            output_colname (str, optional): the column name for the estimator output
+        """
+
+        base_model_params_1["featuresCol"] = predictors_colname
+        base_model_params_1["labelCol"] = target_colname
+        base_model_params_2["featuresCol"] = predictors_colname
+        base_model_params_2["labelCol"] = target_colname
+
+        self.model0 = base_model_class_1(**base_model_params_1)
+        self.model1 = base_model_class_2(**base_model_params_2)
+        self.treatment_colname = treatment_colname
+        self.target_colname = target_colname
+        self.control_value = control_value
+        self.treatment_value = treatment_value
+        self.output_colname = output_colname
+        
+        
+class ModifiedXLearnerEstimator(XLearnerEstimator):
+    """Estimates treatment effect in three stages:
+    1. Train a T-learner to get scores Y_hat_1 and Y_hat_0.
+    2. Train regression models to predict the residuals: tau1 = E[Y(1) - Y_hat_1) | X] and tau0 = E[Y_hat_0 - Y(0) | X]
+    3. Estimate the treatment effect as a weighted average: tau(X) = p(X) * tau0(X) + (1 - p(X)) * tau1(X). Our implementation sets p(X) = 0.5 for all X.
+
+    X-learner was proposed in Künzel et al. (2019) (https://arxiv.org/pdf/1706.03461.pdf).
+    """
+
+    def __init__(
+        self,
+        base_model_class_1_1: Any,
+        base_model_params_1_1: Dict,
+        base_model_class_1_2: Any,
+        base_model_params_1_2: Dict,
+        base_model_class_2_1: Any,
+        base_model_params_2_1: Dict,
+        base_model_class_2_2: Any,
+        base_model_params_2_2: Dict,
+        predictors_colname_2: str = "features",
+        predictors_colname_1: str = "features",
+        treatment_colname: str = "treatment",
+        target_colname: str = "outcome",
+        treatment_value: int = 1,
+        control_value: int = 0,
+        output_colname: str = "score",
+    ):
+
+        """Initializes the X-learner.
+
+        Args:
+            base_model_class_1 (pyspark.ml): the model class to instantiate the first stage learners
+            base_model_params_1 (dict): parameters and their values for the first stage models
+            predictors_colname_1 (list of str): the column names that contain the predictor variables for the first stage models
+            base_model_class_2 (): the model class to instantiate the second stage learners
+            base_model_params_2 (dict): parameters and their values for the second stage models. The models must be regressors.
+            predictors_colname_2 (list of str): the column names that contain the predictor variables for the second stage models
+            treatment_colname (str, optional): the column name that contains the treatment indicators
+            target_colname (str, optional): the column name that contains the target
+            treatment_value (str or int, optional): the value in column <treatment_colname> that refers to the treatment group
+            control_value (str or int, optional): the value in column <treatment_colname> that refers to the control group
+            output_colname (str, optional): the column name for the estimator output
+        """
+
+        self.first_learner = ModifiedTLearnerEstimator(
+            base_model_class_1_1,
+            base_model_params_1_1,
+            base_model_class_1_2,
+            base_model_params_1_2,
+            predictors_colname_1,
+            treatment_colname,
+            target_colname,
+            treatment_value,
+            control_value,
+        )
+
+        self.second_learner = ModifiedTLearnerEstimator(
+            base_model_class_2_1,
+            base_model_params_2_1,
+            base_model_class_2_2,
+            base_model_params_2_2,
+            predictors_colname_2,
+            treatment_colname,
+            "D",
+            treatment_value,
+            control_value,
+        )
+
+        self.treatment_colname = treatment_colname
+        self.target_colname = target_colname
+        self.control_value = control_value
+        self.treatment_value = treatment_value
+        self.output_colname = output_colname
